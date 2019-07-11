@@ -24,7 +24,18 @@ Licencia: GNU General Public License v3.0 ( mas info en GitHub )
 #pragma endregion
 
 #pragma region INCLUDES
-// Librerias comantadas en proceso de sustitucion por la WiFiMQTTManager
+
+#include <M5Stack.h>					// Para el Hardware M5Stack
+// Includes de la libreria grafica cfGUI: https://github.com/JF002/cfGUI
+#include <Screen.h>
+#include <ButtonInfoBar.h>
+#include <StatusBar.h>
+#include <Button.h>
+#include <WidgetMosaic.h>
+#include <time.h>
+#include <sys/time.h>
+#include <AppScreen.h>
+#include <UpDownButton.h>
 
 #include <AsyncMqttClient.h>			// Vamos a probar esta que es Asincrona: https://github.com/marvinroger/async-mqtt-client
 #include <FS.h>							// Libreria Sistema de Ficheros
@@ -33,10 +44,26 @@ Licencia: GNU General Public License v3.0 ( mas info en GitHub )
 #include <WebServer.h>					// La necesita WifiManager para el formulario de configuracion (ESP32)
 #include <ArduinoJson.h>				// OJO: Tener instalada una version NO BETA (a dia de hoy la estable es la 5.13.4). Alguna pata han metido en la 6
 #include <string>						// Para el manejo de cadenas
-#include <Bounce2.h>					// Libreria para filtrar rebotes de los Switches: https://github.com/thomasfredericks/Bounce2
+//#include <Bounce2.h>					// Libreria para filtrar rebotes de los Switches: https://github.com/thomasfredericks/Bounce2
 #include <SPIFFS.h>						// Libreria para sistema de ficheros SPIFFS
 #include <NTPClient.h>					// Para la gestion de la hora por NTP
 #include <WiFiUdp.h>					// Para la conexion UDP con los servidores de hora.
+
+using namespace Codingfield::UI;
+AppScreen* screen;
+StatusBar* topBar;
+ButtonInfoBar* bottomBar;
+Codingfield::UI::Button* BotonMQTT;
+Codingfield::UI::Button* BotonRSSI;
+Codingfield::UI::UpDownButton* BotonAZ;
+Codingfield::UI::Button* BotonInitHW;
+Codingfield::UI::Button* BotonSTOP;
+Codingfield::UI::Button* BotonPARK;
+WidgetMosaic* mosaic;
+Widget* focus;
+
+int32_t editButtonValue = 0;
+int32_t editOldButtonValue = 0;
 
 #pragma endregion
 
@@ -62,14 +89,14 @@ static const int HORA_LOCAL = 2;
 AsyncMqttClient ClienteMQTT;
 
 // Los manejadores para las tareas. El resto de las cosas que hace nuestro controlador que son un poco mas flexibles que la de los pulsos del Stepper
-TaskHandle_t THandleTaskMiProyectoRun,THandleTaskProcesaComandos,THandleTaskComandosSerieRun,THandleTaskMandaTelemetria,THandleTaskGestionRed,THandleTaskEnviaRespuestas;	
+TaskHandle_t THandleTaskGUI,THandleTaskMiProyectoRun,THandleTaskProcesaComandos,THandleTaskComandosSerieRun,THandleTaskMandaTelemetria,THandleTaskGestionRed,THandleTaskEnviaRespuestas;	
 
 // Manejadores Colas para comunicaciones inter-tareas
 QueueHandle_t ColaComandos,ColaRespuestas;
 
 // Timer Run
-hw_timer_t * timer_stp = NULL;
-portMUX_TYPE timerMux = portMUX_INITIALIZER_UNLOCKED;
+//hw_timer_t * timer_stp = NULL;
+//portMUX_TYPE timerMux = portMUX_INITIALIZER_UNLOCKED;
 
 // Flag para el estado del sistema de ficheros
 boolean SPIFFStatus = false;
@@ -981,8 +1008,103 @@ void TaskMandaTelemetria( void * parameter ){
 	
 }
 
-// Funcion de manejo del Timer con soporte para unidad de coma flotante
+// tarea para Gestion del GUI
+void TaskGUI( void * parameter ){
 
+	TickType_t xLastWakeTime;
+	const TickType_t xFrequency = 100;
+	xLastWakeTime = xTaskGetTickCount ();
+
+	// Para el GUI, ya lo movere a algun sitio
+	std::vector<StatusBar::WifiStatuses> wifiStatus {StatusBar::WifiStatuses::No_signal,
+                                                 StatusBar::WifiStatuses::Weak,
+                                                 StatusBar::WifiStatuses::Medium,
+                                                 StatusBar::WifiStatuses::Full};
+	int32_t uptimeHours=0;
+	bool longPush = false;
+	
+
+	while(true){
+
+		
+
+		if (ClienteMQTT.connected()){
+
+			BotonMQTT->SetText("OK");
+		}
+		else{
+
+			BotonMQTT->SetText("FALLO");
+
+		}
+   		
+   		BotonRSSI->SetText("RSSI");
+
+   		uptimeHours = millis() / (60*60000);
+   		topBar->SetUptime(uptimeHours);
+
+   		char strftime_buf[64];
+   		snprintf(strftime_buf, 64, "%02d:%02d:%02d", 12, 14, 59);
+   		topBar->SetDateTime(strftime_buf);
+   		
+   		auto rssi =WiFi.RSSI();
+   		if(rssi >= -55) {
+   			topBar->SetWifiStatus(StatusBar::WifiStatuses::Full);
+   		} 
+		else if(rssi >= -75) {
+   			topBar->SetWifiStatus(StatusBar::WifiStatuses::Medium);
+   		} 
+		else if(rssi >= -85) {
+      		topBar->SetWifiStatus(StatusBar::WifiStatuses::Weak);
+   		} 
+		else {
+      		topBar->SetWifiStatus(StatusBar::WifiStatuses::No_signal);
+   		}
+  	
+		//M5.update();
+		//delay(10);
+
+  		// Notify the widgets that physical buttons are pressed
+		
+		M5.BtnA.read();
+  		if(M5.BtnA.wasPressed()) {
+	    	focus->OnButtonAPressed();
+  		}
+
+		M5.BtnB.read();
+  		if(M5.BtnB.pressedFor(1000)) {
+    		if(!longPush) {
+      		focus->OnButtonBLongPush();
+      		longPush = true;
+    		}
+  		}
+  		
+		  else if(M5.BtnB.wasReleased()) {
+    		if(!longPush) {
+      			focus->OnButtonBPressed();
+    		}
+    		else {
+      			longPush = false;
+    		}
+  		}
+
+		M5.BtnC.read();
+  		if(M5.BtnC.wasPressed()) {
+    		focus->OnButtonCPressed();
+  		}
+
+  		// Redraw the screen
+  		screen->Draw();
+
+  		
+		vTaskDelayUntil( &xLastWakeTime, xFrequency );
+
+	}
+	
+}
+
+// Funcion de manejo del Timer con soporte para unidad de coma flotante
+/*
 uint32_t cp0_regs[18];
 
 void IRAM_ATTR timer_isr() {
@@ -1031,8 +1153,12 @@ void IRAM_ATTR timer_isr() {
 
 }
 
+ */
 
 #pragma endregion
+
+
+
 
 #pragma region Funcion Setup() de ARDUINO
 
@@ -1045,6 +1171,125 @@ void setup() {
 
 	Serial.println("-- Iniciando Controlador MiProyecto --");
 
+	// Configuracion de la clase del M5Stack
+	M5.begin();
+	//Wire.begin();
+	M5.Lcd.invertDisplay(true);
+	M5.Lcd.fillScreen(BLACK);
+  	M5.Lcd.setCursor(10, 10);
+  	M5.Lcd.setTextColor(WHITE);
+ 	M5.Lcd.setTextSize(3);
+	M5.Lcd.printf("INICIANDO SISTEMA");
+	delay(2000);
+	
+	// Configuracion del GUI
+	// Instanciate and configure all widgets
+  	topBar = new StatusBar();
+  	bottomBar = new ButtonInfoBar();
+  	mosaic = new WidgetMosaic(3, 2);
+  	screen = new AppScreen(Size(320, 240), BLACK, topBar, bottomBar, mosaic);
+
+  	// Give the focus to the main screen
+  	focus = screen;
+
+  	BotonMQTT = new Codingfield::UI::Button(mosaic);
+  	BotonMQTT->SetBackgroundColor(RED);
+  	BotonMQTT->SetTextColor(WHITE);
+  	BotonMQTT->SetTitle("MQTT");
+	
+  	BotonRSSI = new Codingfield::UI::Button(mosaic);
+  	BotonRSSI->SetBackgroundColor(ORANGE);
+  	BotonRSSI->SetTextColor(BLACK);
+  	BotonRSSI->SetText("50%");
+
+  	BotonAZ = new Codingfield::UI::UpDownButton(mosaic); // Up/Down button
+  	BotonAZ->SetBackgroundColor(GREEN);
+  	BotonAZ->SetTextColor(BLACK);
+  	BotonAZ->SetText("0");
+
+  	BotonInitHW = new Codingfield::UI::Button(mosaic);
+  	BotonInitHW->SetBackgroundColor(TFT_GREEN);
+  	BotonInitHW->SetTextColor(TFT_BLACK);
+  	BotonInitHW->SetText("INIT");
+
+  	BotonSTOP = new Codingfield::UI::Button(mosaic);
+  	BotonSTOP->SetBackgroundColor(GREEN);
+  	BotonSTOP->SetTextColor(TFT_RED);
+  	BotonSTOP->SetText("STOP");
+
+  	BotonPARK = new Codingfield::UI::Button(mosaic);
+  	BotonPARK->SetBackgroundColor(GREEN);
+  	BotonPARK->SetTextColor(TFT_BLACK);
+  	BotonPARK->SetText("PARK");
+
+  	topBar->SetUptime(0);
+  	topBar->SetWifiStatus(StatusBar::WifiStatuses::No_signal);
+
+  	bottomBar->SetButtonAText("<");
+  	bottomBar->SetButtonBText("SELECT");
+  	bottomBar->SetButtonCText(">");
+	
+  	// Callback called by the mosaic when it changes mode (mosaic/zoom on 1 widget)
+  	// We use it to update the bottom bar.
+  	mosaic->SetZoomOnSelectedCallback([](Widget* widget, bool edit) {
+	
+		if(edit) {
+      		if(widget->IsEditable()){
+        		bottomBar->SetButtonAText("-");
+        		bottomBar->SetButtonBText("APPLY");
+        		bottomBar->SetButtonCText("+");
+      		} 
+			else {
+        		bottomBar->SetButtonAText("");
+        		bottomBar->SetButtonBText("BACK");
+        		bottomBar->SetButtonCText("");
+      		}
+    	}
+		else {
+      		bottomBar->SetButtonAText("<");
+      		bottomBar->SetButtonBText("SELECT");
+      		bottomBar->SetButtonCText(">");
+    	}
+ 	});
+
+  	// Configure callback to be called when the user wants to increment the value
+  	// of BotonAZ
+  	BotonAZ->SetUpCallback([](UpDownButton* w) {
+    	editButtonValue++;
+    	w->SetText(String(editButtonValue).c_str());
+    	return true;
+  	});
+
+  	// Configure callback to be called when the user wants to decrement the value
+  	// of BotonAZ
+  	BotonAZ->SetDownCallback([](UpDownButton* w) {
+    	editButtonValue--;
+    	w->SetText(String(editButtonValue).c_str());
+    	return true;
+  	});
+
+  	// Configure callback to be called when the user wants to apply the value
+  	// of BotonAZ
+  	BotonAZ->SetApplyCallback([](UpDownButton* w) {
+    	editOldButtonValue = editButtonValue;
+    	return false;
+  	});
+
+  	// Configure callback to be called when the user wants to cancel modification
+  	// of the value of BotonAZ
+  	BotonAZ->SetCancelCallback([](UpDownButton* w) {
+    	editButtonValue = editOldButtonValue;
+    	w->SetText(String(editButtonValue).c_str());
+    	return true;
+  	});
+
+  	// Draw the screen and all its children
+  	screen->Draw();
+	//}
+
+	delay(6000);
+
+	
 	// Asignar funciones Callback
 	MiProyectoOBJ.SetRespondeComandoCallback(MandaRespuesta);
 		
@@ -1054,6 +1299,7 @@ void setup() {
 
 	// Iniciar la Wifi
 	WiFi.begin();
+	
 
 	// Iniciar el sistema de ficheros y formatear si no lo esta
 	SPIFFStatus = SPIFFS.begin(true);
@@ -1072,7 +1318,7 @@ void setup() {
   			ClienteMQTT.onPublish(onMqttPublish);
   			ClienteMQTT.setServer(MiConfig.mqttserver, 1883);
 			ClienteMQTT.setCleanSession(true);
-			ClienteMQTT.setClientId("ControlAzimut");
+			ClienteMQTT.setClientId("M5Stack");
 			ClienteMQTT.setCredentials(MiConfig.mqttusuario,MiConfig.mqttpassword);
 			ClienteMQTT.setKeepAlive(4);
 			ClienteMQTT.setWill(MiConfig.lwtTopic.c_str(),2,true,"Offline");
@@ -1109,19 +1355,23 @@ void setup() {
 	xTaskCreatePinnedToCore(TaskMiProyectoRun,"MiProyectoRun",2000,NULL,1,&THandleTaskMiProyectoRun,0);
 	xTaskCreatePinnedToCore(TaskMandaTelemetria,"MandaTelemetria",2000,NULL,1,&THandleTaskMandaTelemetria,0);
 	xTaskCreatePinnedToCore(TaskComandosSerieRun,"ComandosSerieRun",1000,NULL,1,&THandleTaskComandosSerieRun,0);
+	xTaskCreatePinnedToCore(TaskGUI,"ComandosSerieRun",2000,NULL,1,&THandleTaskGUI,0);
 	
 	// Tareas CORE1
 
 
 	// Timer
 
-	timer_stp = timerBegin(0, 80, true);
-  	timerAttachInterrupt(timer_stp, &timer_isr, true);
-  	timerAlarmWrite(timer_stp, TIMER_TICK_US, true);
-  	timerAlarmEnable(timer_stp);
+	//timer_stp = timerBegin(0, 80, true);
+  	//timerAttachInterrupt(timer_stp, &timer_isr, true);
+  	//timerAlarmWrite(timer_stp, TIMER_TICK_US, true);
+  	//timerAlarmEnable(timer_stp);
 	
 	// Init Completado.
 	Serial.println("Setup Completado.");
+
+	//De momento con esto callo el click del altavoz.
+	//dacWrite (25,0);
 	
 }
 
